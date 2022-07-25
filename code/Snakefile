@@ -1,0 +1,202 @@
+rule all:
+	input:
+		auspice_json = "<auspice_json>"
+
+input = "<input_fasta>"
+metadata = "<metadata_file>"
+exclude = "<exclude_list>"
+reference = "<reference_name>"
+colors = "<hex_color_file>" 
+
+rule index_sequences:
+	message:
+		"""
+		Index
+		"""
+	input:
+		sequences = input
+	output:
+		sequence_index = "<index_file>"
+	shell:
+		"""
+		augur index \
+			--sequences {input.sequences} \
+			--output {output.sequence_index}
+		"""
+rule filter_date:
+	message:
+		"""
+		Filter By Variant
+		"""
+	input:
+		sequences = input,
+		sequence_index = rules.index_sequences.output.sequence_index,
+		metadata = metadata,
+		include = reference,
+	output:
+		sequences = "<filter_by_variant_fasta>"
+	params:
+		include-where ="<variant=delta or omicron>"
+	shell:
+		"""
+		augur filter \
+			--sequences {input.sequences} \
+			--sequence-index {input.sequence_index} \
+			--metadata {input.metadata} \
+			--exclude-all \
+			--include {input.include} \
+			--include-where {params.include_where}\
+			--output {output.sequences}
+		"""
+
+rule filter_subsample:
+	message:
+		"""
+		Subsample
+		"""
+	input: 
+		sequences = rules.filter_date.output.sequences,
+		sequence_index = rules.index_sequences.output.sequence_index,
+		metadata = metadata
+		exclude = exclude
+		include = reference
+	output:
+		sequences = "<subsample_background_sequences.fasta>"
+	params:
+		group_by = "month",
+		include_where = "hct=yes",
+		sequences_per_group = <sequence_per_group_number>
+	shell:
+		"""
+		augur filter \
+			--sequences {input.sequences} \
+			--sequence-index {input.sequence_index} \
+			--metadata {input.metadata} \
+			--output {output.sequences} \
+			--include-where {params.include_where} \
+			--include {input.include} \
+			--exclude {input.exclude} \
+			--group-by {params.group_by} \
+			--sequences-per-group {params.sequences_per_group}
+		"""
+
+rule mask:
+	message:
+		"""
+		Mask
+		"""
+	input: 
+		sequences = rules.filter_subsample.output.sequences
+	output:
+		sequences = "<masked_sequences.fasta>"
+	params:
+		mask_from_beginning = 100,
+		mask_from_end = 50,
+		mask_sites = "21987 21846"
+	shell:
+		"""
+		augur mask \
+			--sequences {input.sequences} \
+			--mask-from-beginning {params.mask_from_beginning} \
+			--mask-from-end	{params.mask_from_end} \
+			--mask-sites {params.mask_sites} \
+			--output {output.sequences}
+		"""
+
+rule align:
+	message:
+		"""
+		Align
+		"""
+	input:
+		sequences = rules.mask.output.sequences
+	output:
+		alignment = "<aligned_sequences.fasta>"
+	shell:
+		"""
+		augur align \
+			--sequences {input.sequences} \
+			--output {output.alignment}
+		"""
+
+rule tree:
+	message:
+		"""
+		Tree
+		"""
+	input:
+		alignment = rules.align.output.alignment
+	output:
+		tree = "<raw_tree.nwk>"
+	params:
+		tree_builder_args = "'-ninit 10 -n 4'"
+	shell:
+		"""
+		augur tree \
+			--alignment {input.alignment} \
+			--tree-builder-args {params.tree_builder_args} \
+			--output {output.tree}
+		"""
+
+rule refine:
+	message:
+		"""
+		Refine
+		"""
+	input:
+		tree = rules.tree.output.tree,
+		alignment = rules.align.output.alignment,
+		metadata = metadata
+	output:
+		tree = "<refined_tree.nwk",
+		node_data = "<node_data.json>"
+	params:
+		coalescent = "opt",
+		root = "hCoV-19/Wuhan/Hu-1/2019",
+		clock_rate = 0.0008,
+		clock_std_dev = 0.0004,
+		date_inference = "marginal",
+		divergence_unit = "mutations",
+		clock_filter_iqd = 8
+	shell:
+		"""
+		augur refine \
+			--tree {input.tree} \
+			--alignment {input.alignment} \
+			--metadata {input.metadata} \
+			--output-tree {output.tree} \
+			--output-node-data {output.node_data} \
+			--timetree \
+			--coalescent {params.coalescent} \
+			--root {params.root} \
+			--clock-rate {params.clock_rate} \
+			--clock-std-dev {params.clock_std_dev} \
+			--date-inference {params.date_inference} \
+			--divergence-unit {params.divergence_unit} \
+			--clock-filter-iqd {params.clock_filter_iqd}
+		"""
+
+rule export:
+	message:
+		"""
+		Export
+		"""
+	input:
+		tree = rules.refine.output.tree,
+		node_data = rules.refine.output.node_data,
+		metadata = metadata,
+		colors = colors
+	output:
+		auspice_json = "<auspice.json>"
+	params:
+		color_by_metadata = "hct"
+	shell:
+		"""
+		augur export v2 \
+			--tree {input.tree} \
+			--node-data {input.node_data} \
+			--metadata {input.metadata} \
+			--colors {input.colors} \
+			--output {output.auspice_json} \
+			--color-by-metadata {params.color_by_metadata}
+		"""
